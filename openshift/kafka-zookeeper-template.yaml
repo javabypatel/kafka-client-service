@@ -1,0 +1,322 @@
+apiVersion: v1
+kind: Template
+metadata:
+  name: ${SERVICE_NAME}-${ENVIRONMENT}-kafka
+
+objects:
+  - apiVersion: v1
+    kind: Secret
+    metadata:
+      labels:
+        app: kafka-jaas-config
+      name: kafka-jaas-config
+      namespace: ${PROJECT_NAMESPACE}-${ENVIRONMENT}
+    data:
+      # zookeeper_jaas.conf : This is Base64 encoding of file zookeeper_sasl_jaas.conf
+      # kafka_jaas.conf : This is Base64 encoding of file kafka_sasl_jaas.conf
+      zookeeper_jaas.conf: >-
+        U2VydmVyIHsKICBvcmcuYXBhY2hlLnpvb2tlZXBlci5zZXJ2ZXIuYXV0aC5EaWdlc3RMb2dpbk1vZHVsZSByZXF1aXJlZAogIHVzZXJfbG9jYWw9ImFkbWluMTIzIjsKfTsK
+      kafka_jaas.conf: >-
+        S2Fma2FTZXJ2ZXIgewogIG9yZy5hcGFjaGUua2Fma2EuY29tbW9uLnNlY3VyaXR5LnBsYWluLlBsYWluTG9naW5Nb2R1bGUgcmVxdWlyZWQKICB1c2VybmFtZT0iYWRtaW4iCiAgcGFzc3dvcmQ9ImFkbWluMTIzIgogIHVzZXJfbG9jYWw9ImFkbWluMTIzIjsKfTsKS2Fma2FDbGllbnQgewogIG9yZy5hcGFjaGUua2Fma2EuY29tbW9uLnNlY3VyaXR5LnBsYWluLlBsYWluTG9naW5Nb2R1bGUgcmVxdWlyZWQKICB1c2VybmFtZT0iYWRtaW4iCiAgcGFzc3dvcmQ9ImFkbWluMTIzIjsKfTsKQ2xpZW50IHsKICBvcmcuYXBhY2hlLnpvb2tlZXBlci5zZXJ2ZXIuYXV0aC5EaWdlc3RMb2dpbk1vZHVsZSByZXF1aXJlZAogIHVzZXJuYW1lPSJhZG1pbiIKICBwYXNzd29yZD0iYWRtaW4xMjMiOwp9Ow==
+    type: Opaque
+
+  # ZOOKEEPER SERVICE FOR INTERNAL KAFKA-ZOOKEEPER COMMUNICATION
+  - apiVersion: v1
+    kind: Service
+    metadata:
+      labels:
+        app: zookeeper-service
+      name: zookeeper-service
+      namespace: ${PROJECT_NAMESPACE}-${ENVIRONMENT}
+    spec:
+      ports:
+        - name: "2181"
+          port: 2181
+          targetPort: 2181
+          protocol: TCP
+        - name: "2888"
+          port: 2888
+          targetPort: 2888
+          protocol: TCP
+        - name: "3888"
+          port: 3888
+          targetPort: 3888
+          protocol: TCP
+      selector:
+        app: zookeeper
+    status:
+      loadBalancer: { }
+
+  # ZOOKEEPER DEPLOYMENT CONFIGURATION
+  - apiVersion: v1
+    kind: DeploymentConfig
+    metadata:
+      labels:
+        app: zookeeper
+      name: zookeeper
+      namespace: ${PROJECT_NAMESPACE}-${ENVIRONMENT}
+    spec:
+      replicas: 1
+      selector:
+        app: zookeeper
+      strategy:
+        resources: { }
+      template:
+        metadata:
+          creationTimestamp: null
+          labels:
+            app: zookeeper
+        spec:
+          containers:
+            - env:
+                - name: ZOOKEEPER_CLIENT_PORT
+                  value: "2181"
+                - name: ZOOKEEPER_INIT_LIMIT
+                  value: "5"
+                - name: ZOOKEEPER_SERVERS
+                  value: zookeeper:2888:3888
+                - name: ZOOKEEPER_SERVER_ID
+                  value: "1"
+                - name: ZOOKEEPER_SYNC_LIMIT
+                  value: "2"
+                - name: ZOOKEEPER_TICK_TIME
+                  value: "2000"
+                - name: KAFKA_OPTS
+                  value: -Djava.security.auth.login.config=/opt/kafka/kafka-jaas-config/zookeeper_jaas.conf
+              volumeMounts:
+                - name: kafka-jaas-config
+                  mountPath: /opt/kafka/kafka-jaas-config
+              image: >-
+                docker.io/confluentinc/cp-zookeeper:5.4.1
+              name: zookeeper
+              ports:
+                - containerPort: 2181
+                - containerPort: 2888
+                - containerPort: 3888
+              resources: { }
+          restartPolicy: Always
+          volumes:
+            - name: kafka-jaas-config
+              secret:
+                secretName: kafka-jaas-config
+                defaultMode: 420
+
+  # KAFKA BROKER SERVICE FOR INTERNAL KAFKA BROKERS COMMUNICATION.
+  - apiVersion: v1
+    kind: Service
+    metadata:
+      labels:
+        app: kafka-brokers-internal-service
+      name: kafka-brokers-internal-service
+      namespace: ${PROJECT_NAMESPACE}-${ENVIRONMENT}
+    spec:
+      ports:
+        - name: tcp-internal
+          protocol: TCP
+          port: 9091
+          targetPort: 9091
+      selector:
+        app: kafka
+      clusterIP: None
+      type: ClusterIP
+      publishNotReadyAddresses: true
+    status:
+      loadBalancer: { }
+
+  # KAFKA BROKER SERVICE FOR EXTERNAL CLIENT COMMUNICATION WITH KAFKA.
+  # This is the service that our KafkaClient app should connect to via external Kafka Route.
+  - apiVersion: v1
+    kind: Service
+    metadata:
+      name: kafka-brokers-external-service
+      namespace: ${PROJECT_NAMESPACE}-${ENVIRONMENT}
+      labels:
+        app: kafka-brokers-external-service
+      annotations:
+        service.alpha.openshift.io/serving-cert-secret-name: ${SERVICE_NAME}-kafka-service-cert
+    spec:
+      ports:
+        - name: tcp-external
+          protocol: TCP
+          port: 9094
+          targetPort: 9094
+      selector:
+        app: kafka
+      type: ClusterIP
+    status:
+      loadBalancer: { }
+
+  # KAFKA DEPLOYMENT CONFIGURATION
+  - kind: DeploymentConfig
+    apiVersion: v1
+    metadata:
+      name: kafka
+      namespace: ${PROJECT_NAMESPACE}-${ENVIRONMENT}
+      labels:
+        app: kafka
+    spec:
+      replicas: 1
+      selector:
+        app: kafka
+      strategy:
+        type: Rolling
+      template:
+        metadata:
+          name: kafka
+          namespace: ${PROJECT_NAMESPACE}-${ENVIRONMENT}
+          labels:
+            app: kafka
+        spec:
+          initContainers:
+            - name: create-keystore
+              image: registry.access.redhat.com/redhat-sso-7/sso71-openshift:1.1-16
+              imagePullPolicy: Always
+              env:
+                - name: keyfile
+                  value: /etc/tls/private/tls.key
+                - name: crtfile
+                  value: /etc/tls/private/tls.crt
+                - name: keystore_pkcs12
+                  value: /usr/share/executable/secrets/keystore.p12
+                - name: password
+                  value: changeit
+                - name: keystore_jks
+                  value: /usr/share/executable/secrets/keystore.jks
+              command: [ "/bin/bash","-c" ]
+              args: [ "openssl pkcs12 -export -in $crtfile -inkey $keyfile -out $keystore_pkcs12 -password pass:$password && keytool -importkeystore -noprompt -srckeystore $keystore_pkcs12 -srcstoretype PKCS12 -srcstorepass $password -destkeystore $keystore_jks -deststoretype JKS -storepass $password" ]
+              volumeMounts:
+                - name: gen-service-certificate-vol
+                  mountPath: /etc/tls/private
+                - name: gen-keystore-path-vol
+                  mountPath: /usr/share/executable/secrets
+              resources:
+                requests:
+                  memory: "256Mi"
+                  cpu: "100m"
+                limits:
+                  memory: "1Gi"
+                  cpu: "500m"
+          containers:
+            - name: kafka
+              resources:
+                requests:
+                  memory: "256Mi"
+                  cpu: "100m"
+                limits:
+                  memory: "1Gi"
+                  cpu: "1"
+              env:
+                - name: NODE_NAME
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.name
+                - name: BOOTSTRAP_SERVERS
+                  value: kafka-brokers-internal-service:9091
+                - name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP
+                  value: INSIDE:SASL_SSL,OUTSIDE:SASL_SSL
+                - name: KAFKA_ADVERTISED_LISTENERS
+                  value: INSIDE://kafka-brokers-internal-service:9091,OUTSIDE://kafka-brokers-external-service:9094
+                - name: KAFKA_LISTENERS
+                  value: INSIDE://0.0.0.0:9091,OUTSIDE://0.0.0.0:9094
+                - name: KAFKA_INTER_BROKER_LISTENER_NAME
+                  value: INSIDE
+                - name: KAFKA_SASL_ENABLED_MECHANISMS
+                  value: PLAIN
+                - name: KAFKA_AUTO_CREATE_TOPICS_ENABLE
+                  value: 'true'
+
+                - name: KAFKA_SSL_SECURE_RANDOM_IMPLEMENTATION
+                  value: SHA1PRNG
+                - name: KAFKA_SSL_ENDPOINT_IDENTIFICATION_ALGORITHM
+                  value: " "
+
+                - name: KAFKA_LISTENER_NAME_INSIDE_SSL_KEYSTORE_LOCATION
+                  value: /usr/share/executable/secrets/keystore.jks
+                - name: KAFKA_LISTENER_NAME_INSIDE_SSL_KEYSTORE_PASSWORD
+                  value: changeit
+                - name: KAFKA_LISTENER_NAME_INSIDE_SSL_KEYSTORE_TYPE
+                  value: JKS
+
+                - name: KAFKA_LISTENER_NAME_INSIDE_SSL_TRUSTSTORE_LOCATION
+                  value: /usr/share/executable/secrets/keystore.jks
+                - name: KAFKA_LISTENER_NAME_INSIDE_SSL_TRUSTSTORE_PASSWORD
+                  value: changeit
+                - name: KAFKA_LISTENER_NAME_INSIDE_SSL_TRUSTSTORE_TYPE
+                  value: JKS
+                - name: KAFKA_LISTENER_NAME_INSIDE_SSL.CLIENT.AUTH
+                  value: required
+
+                - name: KAFKA_LISTENER_NAME_OUTSIDE_SSL_KEYSTORE_LOCATION
+                  value: /usr/share/executable/secrets/keystore.jks
+                - name: KAFKA_LISTENER_NAME_OUTSIDE_SSL_KEYSTORE_PASSWORD
+                  value: changeit
+                - name: KAFKA_LISTENER_NAME_OUTSIDE_SSL_KEYSTORE_TYPE
+                  value: JKS
+
+                - name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR
+                  value: "1"
+                - name: KAFKA_ZOOKEEPER_CONNECT
+                  value: zookeeper-service:2181
+                - name: ZOOKEEPER
+                  value: zookeeper-service:2181
+
+                - name: KAFKA_METRICS_ENABLED
+                  value: 'false'
+                - name: KAFKA_GC_LOG_ENABLED
+                  value: 'false'
+                - name: KAFKA_HEAP_OPTS
+                  value: '-Xms256M'
+                - name: KAFKA_OPTS
+                  value: -Djava.security.auth.login.config=/opt/kafka/kafka-jaas-config/kafka_jaas.conf
+                - name: KAFKA_SASL_ENABLED_MECHANISMS
+                  value: PLAIN
+                - name: KAFKA_SASL_MECHANISM_INTER_BROKER_PROTOCOL
+                  value: PLAIN
+              ports:
+                - name: tcp-internal
+                  containerPort: 9091
+                  protocol: TCP
+                - name: tcp-external
+                  containerPort: 9094
+                  protocol: TCP
+              imagePullPolicy: IfNotPresent
+              volumeMounts:
+                - name: kafka-jaas-config
+                  mountPath: /opt/kafka/kafka-jaas-config
+                - name: gen-service-certificate-vol
+                  mountPath: /etc/tls/private
+                - name: gen-keystore-path-vol
+                  mountPath: /usr/share/executable/secrets
+                  readOnly: true
+              image: >-
+                docker.io/confluentinc/cp-kafka:5.4.1
+          volumes:
+            - name: kafka-jaas-config
+              secret:
+                secretName: kafka-jaas-config
+                defaultMode: 420
+            - name: gen-service-certificate-vol
+              secret:
+                defaultMode: 420
+                secretName: ${SERVICE_NAME}-kafka-service-cert
+            - name: gen-keystore-path-vol
+              emptyDir:
+                medium: Memory
+                defaultMode: 420
+            - name: kafka-truststore-vol
+              emptyDir:
+                medium: Memory
+
+parameters:
+  - name: SERVICE_NAME
+    description: The name of the service for this template
+    value: testservice
+    required: true
+  - name: PROJECT_NAMESPACE
+    description: the namespace name
+    value: kafka-on-openshift
+    required: true
+  - name: ENVIRONMENT
+    description: The Openshift environment
+    required: true
+

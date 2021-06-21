@@ -1,0 +1,26 @@
+server.port: 8081
+
+spring:
+  kafka:
+    bootstrap-servers: kafka-brokers-external-service-jayesh
+    producer:
+      acks: all
+      client-id: cid1-producer
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.ByteArraySerializer
+    consumer:
+      group-id: consumer-test
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.ByteArrayDeserializer
+      auto-offset-reset: latest
+    properties:
+      sasl:
+        jaas:
+          config: org.apache.kafka.common.security.plain.PlainLoginModule required username="local" password="localpassword";
+        mechanism: PLAIN
+      security:
+        protocol: SASL_SSL
+    ssl:
+      trust-store-location: /usr/share/kafka-client-service/truststore.kafka.jks
+      trust-store-password: changeit
+      endpoint-identification-algorithm: " "
